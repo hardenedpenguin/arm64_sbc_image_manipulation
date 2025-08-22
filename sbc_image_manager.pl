@@ -20,6 +20,8 @@ my $CUSTOM_MOUNT_DIR;
 my $VERBOSE = 0;
 my $FORCE_DOWNLOAD = 0;
 my $SKIP_CHROOT = 0;
+my $COMPRESS_IMAGE = 0;
+my $OUTPUT_NAME;
 
 my $LOOP_DEV;
 my $PARTITION;
@@ -42,6 +44,8 @@ Options:
   --verbose            Enable verbose output
   --force              Force re-download of image
   --skip-chroot        Skip entering chroot (setup only)
+  --compress           Compress image with best XZ compression after cleanup
+  --output NAME        Output filename for compressed image (default: auto-generated)
   --help               Show this help message
 
 Examples:
@@ -50,6 +54,8 @@ Examples:
   $0 --url https://... # Use custom image URL
   $0 --verbose         # Enable verbose output
   $0 --force           # Re-download existing image
+  $0 --compress        # Compress image after cleanup
+  $0 --compress --output my_image.xz  # Custom output name
 
 EOF
     exit 0;
@@ -260,6 +266,70 @@ sub grow_image {
     run_or_die("losetup -d $loopdev");
 }
 
+sub format_size {
+    my ($bytes) = @_;
+    my @units = qw(B KB MB GB);
+    my $unit = 0;
+    my $size = $bytes;
+    
+    while ($size >= 1024 && $unit < $#units) {
+        $size /= 1024;
+        $unit++;
+    }
+    
+    return sprintf("%.1f %s", $size, $units[$unit]);
+}
+
+sub compress_image {
+    my ($input_image, $output_name) = @_;
+    
+    # Check if input image exists
+    unless (-f $input_image) {
+        die "[!] Input image not found: $input_image\n";
+    }
+    
+    # Generate output name if not provided
+    if (!$output_name) {
+        my ($name, $ext) = $input_image =~ /(.+)\.(.+)$/;
+        $output_name = "${name}_compressed.xz";
+    }
+    
+    # Ensure .xz extension
+    $output_name .= ".xz" unless $output_name =~ /\.xz$/;
+    
+    # Check if output file already exists
+    if (-f $output_name) {
+        print "[!] Warning: Output file already exists: $output_name\n";
+        print "[*] Overwriting existing file...\n";
+    }
+    
+    print "[*] Compressing image with best XZ compression...\n";
+    print "[*] This may take a while depending on image size...\n";
+    
+    # Get original file size for progress indication
+    my $original_size = (stat($input_image))[7];
+    print "[*] Original image size: " . format_size($original_size) . "\n";
+    
+    # Use xz with best compression (-9) and extreme preset (-e)
+    # -c outputs to stdout, which we redirect to the output file
+    run_or_die("xz -9 -e -c '$input_image' > '$output_name'");
+    
+    # Show compression results
+    my $compressed_size = (stat($output_name))[7];
+    my $compression_ratio = sprintf("%.1f", (1 - $compressed_size / $original_size) * 100);
+    
+    print "[✓] Compression complete!\n";
+    print "[*] Original size: " . format_size($original_size) . "\n";
+    print "[*] Compressed size: " . format_size($compressed_size) . "\n";
+    print "[*] Compression ratio: ${compression_ratio}%\n";
+    print "[*] Output file: $output_name\n";
+    
+    # Verify the compressed file
+    print "[*] Verifying compressed image integrity...\n";
+    run_or_die("xz -t '$output_name'");
+    print "[✓] Compressed image verification passed\n";
+}
+
 # === Main Logic ===
 $SIG{INT} = $SIG{TERM} = sub { safe_cleanup(); exit 1 };
 
@@ -271,6 +341,8 @@ GetOptions(
     "verbose" => \$VERBOSE,
     "force" => \$FORCE_DOWNLOAD,
     "skip-chroot" => \$SKIP_CHROOT,
+    "compress" => \$COMPRESS_IMAGE,
+    "output=s" => \$OUTPUT_NAME,
     "help" => \&show_help,
 );
 
@@ -283,6 +355,10 @@ print "[*] Target size: ${IMAGE_SIZE_GB}GB\n";
 print "[*] Mount directory: $MOUNT_DIR\n";
 print "[*] Image URL: $IMAGE_URL\n";
 print "[*] Verbose mode: " . ($VERBOSE ? "enabled" : "disabled") . "\n";
+print "[*] Compression mode: " . ($COMPRESS_IMAGE ? "enabled" : "disabled") . "\n";
+if ($COMPRESS_IMAGE && $OUTPUT_NAME) {
+    print "[*] Output file: $OUTPUT_NAME\n";
+}
 print "\n";
 
 foreach my $cmd (qw/wget xz losetup mount chroot qemu-aarch64-static parted e2fsck resize2fs partprobe btrfs blkid lsblk/) {
@@ -427,4 +503,11 @@ if ($SKIP_CHROOT) {
 }
 
 cleanup();
+
+# Compress image if requested
+if ($COMPRESS_IMAGE) {
+    print "\n[*] Starting image compression...\n";
+    compress_image($IMAGE_IMG, $OUTPUT_NAME);
+}
+
 print "[✓] Done. Image is unmounted and clean.\n";

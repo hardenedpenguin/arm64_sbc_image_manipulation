@@ -12,6 +12,7 @@ A streamlined Perl script for downloading, expanding, and entering a chroot envi
 - **Network Access**: Provides working DNS resolution in chroot environment
 - **EFI Support**: Automatically mounts EFI partitions when present
 - **Clean Cleanup**: Properly unmounts and restores original state on exit
+- **Image Compression**: Optional best-quality XZ compression after modifications
 
 ## Prerequisites
 
@@ -49,6 +50,15 @@ sudo ./sbc_image_manager.pl --skip-chroot
 
 # Custom mount directory
 sudo ./sbc_image_manager.pl --mount /mnt/custom
+
+# Compress image after modifications
+sudo ./sbc_image_manager.pl --compress
+
+# Compress with custom output name
+sudo ./sbc_image_manager.pl --compress --output my_custom_image.xz
+
+# Combine options: large image with compression
+sudo ./sbc_image_manager.pl --size 10 --compress --output large_image.xz
 ```
 
 ### Command Line Options
@@ -59,6 +69,8 @@ sudo ./sbc_image_manager.pl --mount /mnt/custom
 - `--verbose` - Enable verbose output
 - `--force` - Force re-download of image
 - `--skip-chroot` - Skip entering chroot (setup only)
+- `--compress` - Compress image with best XZ compression after cleanup
+- `--output NAME` - Output filename for compressed image (default: auto-generated)
 - `--help` - Show help message
 
 ### What it does:
@@ -74,6 +86,8 @@ sudo ./sbc_image_manager.pl --mount /mnt/custom
 9. **Sets up** QEMU emulation for cross-architecture support
 10. **Mounts** necessary bind mounts (dev, proc, sys, etc.)
 11. **Enters** an interactive ARM64 chroot environment (unless --skip-chroot)
+12. **Cleans up** mounts and loop devices on exit
+13. **Compresses** the modified image with best XZ compression (if --compress specified)
 
 ### In the chroot environment:
 
@@ -94,6 +108,37 @@ systemctl enable ssh
 ```
 
 Press `Ctrl+D` or type `exit` to leave the chroot and automatically clean up.
+
+## Image Compression
+
+After making modifications to the image, you can optionally compress it using the best XZ compression available:
+
+### Benefits of Compression:
+- **Reduced file size**: Typically 60-80% smaller than uncompressed images
+- **Faster transfer**: Smaller files transfer faster over networks
+- **Storage efficiency**: Save disk space when storing multiple images
+- **Distribution ready**: Compressed images are ideal for sharing
+
+### Compression Options:
+- **Best compression**: Uses `xz -9 -e` for maximum compression ratio
+- **Auto-naming**: Automatically generates output filename if not specified
+- **Integrity verification**: Verifies compressed file integrity after compression
+- **Progress feedback**: Shows original size, compressed size, and compression ratio
+
+### Compression Examples:
+```bash
+# Basic compression with auto-generated name
+sudo ./sbc_image_manager.pl --compress
+# Output: debian-12-base-arm64+aml-s905x-cc_compressed.xz
+
+# Custom output name
+sudo ./sbc_image_manager.pl --compress --output my_custom_image.xz
+
+# Large image with compression
+sudo ./sbc_image_manager.pl --size 10 --compress --output large_image.xz
+```
+
+**Note**: Compression can take a significant amount of time for large images, especially with the best compression settings. The script will show progress information during the process.
 
 ## Configuration
 
