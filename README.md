@@ -13,6 +13,7 @@ A streamlined Perl script for downloading, expanding, and entering a chroot envi
 - **EFI Support**: Automatically mounts EFI partitions when present
 - **Clean Cleanup**: Properly unmounts and restores original state on exit
 - **Image Compression**: Optional best-quality XZ compression after modifications
+- **Fully Configurable**: All hardcoded values can be customized via command-line options
 
 ## Prerequisites
 
@@ -51,6 +52,12 @@ sudo ./sbc_image_manager.pl --skip-chroot
 # Custom mount directory
 sudo ./sbc_image_manager.pl --mount /mnt/custom
 
+# Custom QEMU binary path
+sudo ./sbc_image_manager.pl --qemu-bin /usr/local/bin/qemu-aarch64-static
+
+# Custom image filenames
+sudo ./sbc_image_manager.pl --image-img my_custom.img --image-xz my_custom.img.xz
+
 # Compress image after modifications
 sudo ./sbc_image_manager.pl --compress
 
@@ -59,13 +66,25 @@ sudo ./sbc_image_manager.pl --compress --output my_custom_image.xz
 
 # Combine options: large image with compression
 sudo ./sbc_image_manager.pl --size 10 --compress --output large_image.xz
+
+# Full customization example
+sudo ./sbc_image_manager.pl \
+  --url https://downloads.raspberrypi.org/raspios_lite_arm64/images/raspios_lite_arm64-2023-12-11/2023-12-05-raspios-bookworm-arm64-lite.img.xz \
+  --mount /mnt/raspberry_pi \
+  --qemu-bin /usr/local/bin/qemu-aarch64-static \
+  --image-img raspberry_pi.img \
+  --size 8 \
+  --verbose
 ```
 
 ### Command Line Options
 
 - `--size SIZE_GB` - Target image size in GB (default: 5)
 - `--url URL` - Custom image URL
-- `--mount DIR` - Custom mount directory
+- `--mount DIR` - Custom mount directory (default: `/mnt/libre_image`)
+- `--qemu-bin PATH` - Path to qemu-aarch64-static binary (default: `/usr/bin/qemu-aarch64-static`)
+- `--image-xz NAME` - Custom .xz filename (default: `debian-12-base-arm64+aml-s905x-cc.img.xz`)
+- `--image-img NAME` - Custom .img filename (default: `debian-12-base-arm64+aml-s905x-cc.img`)
 - `--verbose` - Enable verbose output
 - `--force` - Force re-download of image
 - `--skip-chroot` - Skip entering chroot (setup only)
@@ -142,11 +161,36 @@ sudo ./sbc_image_manager.pl --size 10 --compress --output large_image.xz
 
 ## Configuration
 
-Edit the script to customize:
+All configuration is now done via command-line options. No need to edit the script!
 
-- `$IMAGE_URL` - Source image URL
-- `$MOUNT_DIR` - Where to mount the image (default: `/mnt/libre_image`)
-- Target size in `grow_image_to_5GB()` function
+### Default Values
+
+The script uses these defaults, which can be overridden with command-line options:
+
+- **Image URL**: `https://distro.libre.computer/ci/debian/12/debian-12-base-arm64%2Baml-s905x-cc.img.xz`
+- **Mount Directory**: `/mnt/libre_image`
+- **QEMU Binary**: `/usr/bin/qemu-aarch64-static`
+- **Image Size**: `5GB`
+- **Image Files**: `debian-12-base-arm64+aml-s905x-cc.img.xz` → `debian-12-base-arm64+aml-s905x-cc.img`
+
+### Customization Examples
+
+```bash
+# Use different SBC image (Raspberry Pi)
+sudo ./sbc_image_manager.pl \
+  --url https://downloads.raspberrypi.org/raspios_lite_arm64/images/raspios_lite_arm64-2023-12-11/2023-12-05-raspios-bookworm-arm64-lite.img.xz \
+  --image-img raspberry_pi.img \
+  --mount /mnt/raspberry_pi
+
+# Use custom QEMU installation
+sudo ./sbc_image_manager.pl \
+  --qemu-bin /usr/local/bin/qemu-aarch64-static \
+  --mount /tmp/custom_mount
+
+# Work with multiple images simultaneously
+sudo ./sbc_image_manager.pl --image-img image1.img --mount /mnt/image1
+sudo ./sbc_image_manager.pl --image-img image2.img --mount /mnt/image2
+```
 
 ## Safety Features
 
@@ -161,10 +205,25 @@ Edit the script to customize:
 
 ## Image Details
 
-Default image: **Debian 12 Base ARM64** for AML S905X CC
+### Default Image: **Debian 12 Base ARM64** for AML S905X CC
 - Source: Libre Computer CI builds
 - Architecture: ARM64 (AArch64)
 - Base OS: Debian 12 (Bookworm)
 - Target Hardware: Amlogic S905X based boards
 
-This script provides a clean, automated way to work with ARM64 SBC images on x86_64 development machines.
+### Supported Images
+
+The script can work with any ARM64 image that meets these requirements:
+- **Format**: Raw disk image (.img) or compressed (.img.xz)
+- **Architecture**: ARM64 (AArch64)
+- **Filesystem**: ext4, Btrfs, or XFS
+- **Partitioning**: Both partitioned and unpartitioned images supported
+
+### Popular ARM64 SBC Images
+
+- **Raspberry Pi OS**: `https://downloads.raspberrypi.org/raspios_lite_arm64/images/`
+- **Ubuntu for ARM64**: `https://cdimage.ubuntu.com/releases/`
+- **Debian ARM64**: `https://cdimage.debian.org/cdimage/`
+- **Libre Computer**: `https://distro.libre.computer/ci/`
+
+This script provides a clean, automated way to work with ARM64 SBC images on x86_64 development machines, with full customization support for different images and configurations.

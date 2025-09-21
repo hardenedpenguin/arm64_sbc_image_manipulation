@@ -17,6 +17,9 @@ my $QEMU_BIN   = "/usr/bin/qemu-aarch64-static";
 my $IMAGE_SIZE_GB = 5;
 my $CUSTOM_IMAGE_URL;
 my $CUSTOM_MOUNT_DIR;
+my $CUSTOM_QEMU_BIN;
+my $CUSTOM_IMAGE_XZ;
+my $CUSTOM_IMAGE_IMG;
 my $VERBOSE = 0;
 my $FORCE_DOWNLOAD = 0;
 my $SKIP_CHROOT = 0;
@@ -40,7 +43,10 @@ Usage: $0 [OPTIONS]
 Options:
   --size SIZE_GB        Target image size in GB (default: 5)
   --url URL            Custom image URL
-  --mount DIR          Custom mount directory
+  --mount DIR          Custom mount directory (default: /mnt/libre_image)
+  --qemu-bin PATH      Path to qemu-aarch64-static binary (default: /usr/bin/qemu-aarch64-static)
+  --image-xz NAME      Custom .xz filename (default: debian-12-base-arm64+aml-s905x-cc.img.xz)
+  --image-img NAME     Custom .img filename (default: debian-12-base-arm64+aml-s905x-cc.img)
   --verbose            Enable verbose output
   --force              Force re-download of image
   --skip-chroot        Skip entering chroot (setup only)
@@ -52,6 +58,9 @@ Examples:
   $0                    # Use defaults
   $0 --size 10         # Create 10GB image
   $0 --url https://... # Use custom image URL
+  $0 --mount /tmp/mount # Use custom mount directory
+  $0 --qemu-bin /usr/local/bin/qemu-aarch64-static # Custom QEMU binary path
+  $0 --image-img my_custom.img # Use custom image filename
   $0 --verbose         # Enable verbose output
   $0 --force           # Re-download existing image
   $0 --compress        # Compress image after cleanup
@@ -338,6 +347,9 @@ GetOptions(
     "size=i" => \$IMAGE_SIZE_GB,
     "url=s" => \$CUSTOM_IMAGE_URL,
     "mount=s" => \$CUSTOM_MOUNT_DIR,
+    "qemu-bin=s" => \$CUSTOM_QEMU_BIN,
+    "image-xz=s" => \$CUSTOM_IMAGE_XZ,
+    "image-img=s" => \$CUSTOM_IMAGE_IMG,
     "verbose" => \$VERBOSE,
     "force" => \$FORCE_DOWNLOAD,
     "skip-chroot" => \$SKIP_CHROOT,
@@ -349,11 +361,16 @@ GetOptions(
 # Use custom values if provided
 $IMAGE_URL = $CUSTOM_IMAGE_URL if $CUSTOM_IMAGE_URL;
 $MOUNT_DIR = $CUSTOM_MOUNT_DIR if $CUSTOM_MOUNT_DIR;
+$QEMU_BIN = $CUSTOM_QEMU_BIN if $CUSTOM_QEMU_BIN;
+$IMAGE_XZ = $CUSTOM_IMAGE_XZ if $CUSTOM_IMAGE_XZ;
+$IMAGE_IMG = $CUSTOM_IMAGE_IMG if $CUSTOM_IMAGE_IMG;
 
 print "[*] ARM64 SBC Image Manager\n";
 print "[*] Target size: ${IMAGE_SIZE_GB}GB\n";
 print "[*] Mount directory: $MOUNT_DIR\n";
 print "[*] Image URL: $IMAGE_URL\n";
+print "[*] QEMU binary: $QEMU_BIN\n";
+print "[*] Image files: $IMAGE_XZ -> $IMAGE_IMG\n";
 print "[*] Verbose mode: " . ($VERBOSE ? "enabled" : "disabled") . "\n";
 print "[*] Compression mode: " . ($COMPRESS_IMAGE ? "enabled" : "disabled") . "\n";
 if ($COMPRESS_IMAGE && $OUTPUT_NAME) {
