@@ -1,4 +1,22 @@
 #!/usr/bin/env perl
+#
+# ARM64 SBC Image Manager
+# Copyright (c) 2025-2026 Jory A. Pratt, W5GLE <geekypenguin@gmail.com>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+
 use strict;
 use warnings;
 use File::Path qw(make_path);
@@ -28,26 +46,21 @@ my $MOUNT_DIR  = "/mnt/libre_image";
 my $QEMU_BIN   = "/usr/bin/qemu-aarch64-static";
 
 # === Command Line Options ===
-my $IMAGE_SIZE_GB = 5;
-my $CUSTOM_IMAGE_URL;
-my $CUSTOM_MOUNT_DIR;
-my $CUSTOM_QEMU_BIN;
-my $CUSTOM_IMAGE_XZ;
-my $CUSTOM_IMAGE_IMG;
-my $VERBOSE = 0;
-my $FORCE_DOWNLOAD = 0;
-my $SKIP_CHROOT = 0;
-my $COMPRESS_IMAGE = 0;
-my $OUTPUT_NAME;
-my $DRY_RUN = 0;
-my $CHECKSUM;
-my $CHECKSUM_FILE;
-my $BACKUP_IMAGE = 0;
-my $RESUME_DOWNLOAD = 1;
-my $LOG_FILE;
-my $COMPRESS_MODE = 'best';  # 'fast', 'best', or number 1-9
-my $SHOW_STATUS = 0;
-my $CLEANUP_ONLY = 0;
+my %opts = (
+    size => 5,
+    verbose => 0,
+    force => 0,
+    skip_chroot => 0,
+    compress => 0,
+    dry_run => 0,
+    backup => 0,
+    resume_download => 1,
+    compress_mode => 'best',
+    show_status => 0,
+    cleanup_only => 0,
+);
+my ($CUSTOM_IMAGE_URL, $CUSTOM_MOUNT_DIR, $CUSTOM_QEMU_BIN, $CUSTOM_IMAGE_XZ, $CUSTOM_IMAGE_IMG);
+my ($OUTPUT_NAME, $CHECKSUM, $CHECKSUM_FILE, $LOG_FILE);
 
 # === State Variables ===
 my $LOOP_DEV;
@@ -77,7 +90,7 @@ sub log_msg {
     my $timestamp = strftime("%Y-%m-%d %H:%M:%S", localtime());
     my $log_line = "[$timestamp] [$level] $msg\n";
     
-    print $log_line unless $DRY_RUN && $level eq 'debug';
+    print $log_line unless $opts{dry_run} && $level eq 'debug';
     
     if ($LOG_HANDLE) {
         print $LOG_HANDLE $log_line;
@@ -89,7 +102,7 @@ sub info { log_msg(shift, 'info'); }
 sub warn_msg { log_msg(shift, 'warn'); }
 sub error { log_msg(shift, 'error'); }
 sub success { log_msg(shift, 'success'); }
-sub debug { log_msg(shift, 'debug') if $VERBOSE; }
+sub debug { log_msg(shift, 'debug') if $opts{verbose}; }
 
 sub colored {
     my ($text, $color) = @_;
@@ -155,6 +168,13 @@ sub shell_quote {
     return "'$arg'";
 }
 
+sub clamp {
+    my ($val, $min, $max) = @_;
+    return $min if $val < $min;
+    return $max if $val > $max;
+    return $val;
+}
+
 sub validate_path {
     my ($path, $name) = @_;
     if ($path =~ /[;&|`\$\(\)<>]/) {
@@ -170,12 +190,12 @@ sub run_safe {
     my @cmd = ref($cmd_ref) eq 'ARRAY' ? @$cmd_ref : ($cmd_ref);
     my $cmd_str = ref($cmd_ref) eq 'ARRAY' ? join(' ', map { shell_quote($_) } @cmd) : $cmd_ref;
     
-    if ($DRY_RUN) {
+    if ($opts{dry_run}) {
         info(colored("[DRY-RUN] Would run: ", 'cyan') . $cmd_str);
         return { success => 1, output => '', exit_code => 0 };
     }
     
-    debug("Running: " . $cmd_str);
+    debug("Running: " . $cmd_str) if $opts{verbose};
     
     my $output = '';
     my $error = '';
@@ -263,21 +283,20 @@ sub cleanup {
     }
 
     # Restore resolv.conf state BEFORE unmounting the root filesystem
-    if ($MOUNT_DIR && is_mountpoint($MOUNT_DIR)) {
+    if ($MOUNT_DIR && is_mountpoint($MOUNT_DIR) && defined $RESOLV_CONF_ORIGINAL_TYPE) {
         my $chroot_resolv_path = "$MOUNT_DIR/etc/resolv.conf";
-        
-        # Remove the bind mount point (file) that was created
         unlink($chroot_resolv_path);
         
-        if (defined $RESOLV_CONF_ORIGINAL_TYPE) {
-            if ($RESOLV_CONF_ORIGINAL_TYPE eq 'symlink' && defined $RESOLV_CONF_SYMLINK_TARGET) {
+        my %restore = (
+            symlink => sub {
+                return unless defined $RESOLV_CONF_SYMLINK_TARGET;
                 info("Restoring resolv.conf symlink...");
-                if (symlink($RESOLV_CONF_SYMLINK_TARGET, $chroot_resolv_path)) {
-                    success("Successfully restored resolv.conf symlink to '$RESOLV_CONF_SYMLINK_TARGET'.");
-                } else {
-                    warn_msg("WARNING: Failed to restore resolv.conf symlink: $!");
-                }
-            } elsif ($RESOLV_CONF_ORIGINAL_TYPE eq 'file' && -f $RESOLV_CONF_BACKUP_FILE) {
+                symlink($RESOLV_CONF_SYMLINK_TARGET, $chroot_resolv_path)
+                    ? success("Successfully restored resolv.conf symlink to '$RESOLV_CONF_SYMLINK_TARGET'.")
+                    : warn_msg("WARNING: Failed to restore resolv.conf symlink: $!");
+            },
+            file => sub {
+                return unless -f $RESOLV_CONF_BACKUP_FILE;
                 info("Restoring resolv.conf file...");
                 if (copy($RESOLV_CONF_BACKUP_FILE, $chroot_resolv_path)) {
                     success("Successfully restored resolv.conf file.");
@@ -285,15 +304,15 @@ sub cleanup {
                 } else {
                     warn_msg("WARNING: Failed to restore resolv.conf file: $!");
                 }
-            } elsif ($RESOLV_CONF_ORIGINAL_TYPE eq 'none') {
+            },
+            none => sub {
                 info("Creating default resolv.conf symlink...");
-                if (symlink("/run/systemd/resolve/stub-resolv.conf", $chroot_resolv_path)) {
-                    success("Created default resolv.conf symlink.");
-                } else {
-                    warn_msg("WARNING: Failed to create default resolv.conf symlink: $!");
-                }
-            }
-        }
+                symlink("/run/systemd/resolve/stub-resolv.conf", $chroot_resolv_path)
+                    ? success("Created default resolv.conf symlink.")
+                    : warn_msg("WARNING: Failed to create default resolv.conf symlink: $!");
+            },
+        );
+        $restore{$RESOLV_CONF_ORIGINAL_TYPE}->() if exists $restore{$RESOLV_CONF_ORIGINAL_TYPE};
     }
 
     # Now unmount the main mount point
@@ -361,26 +380,19 @@ sub verify_checksum {
 }
 
 sub check_existing_work {
-    if (-f $IMAGE_IMG) {
-        info("Found existing image: $IMAGE_IMG");
-        unless ($FORCE_DOWNLOAD) {
-            info("Use --force to re-download");
-            return 1;
-        }
-    }
+    return 0 unless -f $IMAGE_IMG;
+    info("Found existing image: $IMAGE_IMG");
+    return 1 unless $opts{force};
     return 0;
 }
 
 sub download_image {
     my ($url, $output_file) = @_;
-    
     info("Downloading image from: $url");
-    
     my @wget_cmd = ('wget', '-O', $output_file);
-    push @wget_cmd, '--continue' if $RESUME_DOWNLOAD && -f $output_file;
+    push @wget_cmd, '--continue' if $opts{resume_download} && -f $output_file;
     push @wget_cmd, '--progress=bar:force:noscroll' if -t STDOUT;
     push @wget_cmd, $url;
-    
     run_or_die(\@wget_cmd);
     success("Download complete");
 }
@@ -403,15 +415,11 @@ sub extract_image {
 sub grow_image {
     info("Checking image size...");
     my $size = (stat($IMAGE_IMG))[7];
-    my $target = $IMAGE_SIZE_GB * 1024 * 1024 * 1024;
+    my $target = $opts{size} * 1024 * 1024 * 1024;
+    return info("Image is already >= $opts{size}GB, skipping resize.") if $size >= $target;
 
-    if ($size >= $target) {
-        info("Image is already >= ${IMAGE_SIZE_GB}GB, skipping resize.");
-        return;
-    }
-
-    info("Growing image file to ${IMAGE_SIZE_GB}GB...");
-    run_or_die(['truncate', '-s', "${IMAGE_SIZE_GB}G", $IMAGE_IMG]);
+    info("Growing image file to $opts{size}GB...");
+    run_or_die(['truncate', '-s', "$opts{size}G", $IMAGE_IMG]);
 
     my $loopdev = run_capture(['losetup', '--show', '-Pf', $IMAGE_IMG]);
     die colored("[!] Failed to setup loop device.\n", 'red') unless $loopdev;
@@ -476,13 +484,21 @@ sub format_size {
     my @units = qw(B KB MB GB TB);
     my $unit = 0;
     my $size = $bytes;
-    
-    while ($size >= 1024 && $unit < $#units) {
-        $size /= 1024;
-        $unit++;
-    }
-    
+    $size /= 1024, $unit++ while $size >= 1024 && $unit < $#units;
     return sprintf("%.1f %s", $size, $units[$unit]);
+}
+
+sub file_size {
+    my ($file) = @_;
+    return format_size((stat($file))[7]) if -f $file;
+    return undef;
+}
+
+sub get_loop_devices {
+    my ($pattern) = @_;
+    my $output = run_capture("losetup -a 2>/dev/null | grep -E '$pattern' || true");
+    return split(/\n/, $output) if $output;
+    return ();
 }
 
 sub detect_and_resize_fs {
@@ -528,19 +544,10 @@ sub compress_image {
         info("Overwriting existing file...");
     }
     
-    my $comp_level = 9;
-    my $extreme = 1;
-    
-    if ($COMPRESS_MODE eq 'fast') {
-        $comp_level = 1;
-        $extreme = 0;
-    } elsif ($COMPRESS_MODE =~ /^\d+$/) {
-        $comp_level = int($COMPRESS_MODE);
-        $comp_level = 9 if $comp_level > 9;
-        $comp_level = 1 if $comp_level < 1;
-        $extreme = 0 if $comp_level < 9;
-    }
-    
+    my ($comp_level, $extreme) = 
+        $opts{compress_mode} eq 'fast' ? (1, 0) :
+        $opts{compress_mode} =~ /^\d+$/ ? (clamp(int($opts{compress_mode}), 1, 9), int($opts{compress_mode}) == 9) :
+        (9, 1);
     my $comp_desc = $extreme ? "best XZ compression (level $comp_level -e)" : "XZ compression (level $comp_level)";
     info("Compressing image with $comp_desc...");
     info("This may take a while depending on image size...");
@@ -550,7 +557,7 @@ sub compress_image {
     
     my @xz_cmd = ('xz', "-$comp_level");
     push @xz_cmd, '-e' if $extreme;
-    push @xz_cmd, '-v' if -t STDOUT && $VERBOSE;  # Verbose progress to stderr when in terminal
+    push @xz_cmd, '-v' if -t STDOUT && $opts{verbose};
     push @xz_cmd, '-c', $input_image;
     
     # Use shell redirection for xz output
@@ -602,31 +609,21 @@ sub show_status {
     
     # Check loop devices
     print colored("\nLoop Devices:\n", 'cyan');
-    my $loop_output = `losetup -a 2>/dev/null | grep -E "$IMAGE_IMG|$IMAGE_XZ" || true`;
-    if ($loop_output) {
-        chomp($loop_output);
-        my @loops = split(/\n/, $loop_output);
-        foreach my $loop (@loops) {
-            print colored("  [ACTIVE] ", 'green') . "$loop\n";
-        }
+    my @loops = get_loop_devices("$IMAGE_IMG|$IMAGE_XZ");
+    if (@loops) {
+        print colored("  [ACTIVE] ", 'green') . "$_\n" for @loops;
     } else {
         print colored("  [NONE] ", 'yellow') . "No active loop devices for this image\n";
     }
     
     # Image info
     print colored("\nImage Files:\n", 'cyan');
-    if (-f $IMAGE_XZ) {
-        my $size = format_size((stat($IMAGE_XZ))[7]);
-        print colored("  [EXISTS] ", 'green') . "$IMAGE_XZ ($size)\n";
-    } else {
-        print colored("  [MISSING] ", 'yellow') . "$IMAGE_XZ\n";
-    }
-    
-    if (-f $IMAGE_IMG) {
-        my $size = format_size((stat($IMAGE_IMG))[7]);
-        print colored("  [EXISTS] ", 'green') . "$IMAGE_IMG ($size)\n";
-    } else {
-        print colored("  [MISSING] ", 'yellow') . "$IMAGE_IMG\n";
+    for my $file ($IMAGE_XZ, $IMAGE_IMG) {
+        if (my $size = file_size($file)) {
+            print colored("  [EXISTS] ", 'green') . "$file ($size)\n";
+        } else {
+            print colored("  [MISSING] ", 'yellow') . "$file\n";
+        }
     }
     
     print "\n";
@@ -637,23 +634,18 @@ sub cleanup_only {
     info("Cleanup-only mode: cleaning up existing resources...");
     
     # Clean up loop devices
-    my $loop_output = `losetup -a 2>/dev/null | grep -E "$IMAGE_IMG|$IMAGE_XZ" || true`;
-    if ($loop_output) {
-        chomp($loop_output);
-        my @loops = split(/\n/, $loop_output);
-        foreach my $loop_line (@loops) {
-            if ($loop_line =~ /^(\/dev\/loop\d+):/) {
-                my $loop_dev = $1;
-                info("Detaching loop device: $loop_dev");
-                system("losetup -d $loop_dev 2>/dev/null");
-            }
+    my @loops = get_loop_devices("$IMAGE_IMG|$IMAGE_XZ");
+    for my $loop_line (@loops) {
+        if ($loop_line =~ /^(\/dev\/loop\d+):/) {
+            info("Detaching loop device: $1");
+            run_safe(['losetup', '-d', $1], 0);
         }
     }
     
     # Clean up mounts
     if (is_mountpoint($MOUNT_DIR)) {
         info("Unmounting: $MOUNT_DIR");
-        system("umount -lf $MOUNT_DIR 2>/dev/null");
+        run_safe(['umount', '-lf', $MOUNT_DIR], 0);
     }
     
     success("Cleanup complete");
@@ -665,32 +657,32 @@ $SIG{INT} = $SIG{TERM} = sub { safe_cleanup(); exit EXIT_GENERAL_ERROR };
 
 # Parse command line arguments
 GetOptions(
-    "size=i" => \$IMAGE_SIZE_GB,
+    "size=i" => \$opts{size},
     "url=s" => \$CUSTOM_IMAGE_URL,
     "mount=s" => \$CUSTOM_MOUNT_DIR,
     "qemu-bin=s" => \$CUSTOM_QEMU_BIN,
     "image-xz=s" => \$CUSTOM_IMAGE_XZ,
     "image-img=s" => \$CUSTOM_IMAGE_IMG,
-    "verbose" => \$VERBOSE,
-    "force" => \$FORCE_DOWNLOAD,
-    "skip-chroot" => \$SKIP_CHROOT,
-    "compress" => \$COMPRESS_IMAGE,
-    "compress-fast" => sub { $COMPRESS_IMAGE = 1; $COMPRESS_MODE = 'fast'; },
-    "compress-level=i" => sub { $COMPRESS_IMAGE = 1; $COMPRESS_MODE = $_[1]; },
+    "verbose" => \$opts{verbose},
+    "force" => \$opts{force},
+    "skip-chroot" => \$opts{skip_chroot},
+    "compress" => \$opts{compress},
+    "compress-fast" => sub { $opts{compress} = 1; $opts{compress_mode} = 'fast'; },
+    "compress-level=i" => sub { $opts{compress} = 1; $opts{compress_mode} = $_[1]; },
     "output=s" => \$OUTPUT_NAME,
     "checksum=s" => \$CHECKSUM,
     "checksum-file=s" => \$CHECKSUM_FILE,
-    "backup" => \$BACKUP_IMAGE,
-    "no-resume" => sub { $RESUME_DOWNLOAD = 0; },
-    "dry-run" => \$DRY_RUN,
+    "backup" => \$opts{backup},
+    "no-resume" => sub { $opts{resume_download} = 0; },
+    "dry-run" => \$opts{dry_run},
     "log=s" => \$LOG_FILE,
-    "status" => \$SHOW_STATUS,
-    "cleanup-only" => \$CLEANUP_ONLY,
+    "status" => \$opts{show_status},
+    "cleanup-only" => \$opts{cleanup_only},
     "help" => \&show_help,
 ) or exit EXIT_INVALID_ARGS;
 
 # Check for root
-unless ($DRY_RUN || $SHOW_STATUS || $CLEANUP_ONLY) {
+unless ($opts{dry_run} || $opts{show_status} || $opts{cleanup_only}) {
     if ($< != 0) {
         die colored("[!] This script must be run as root\n", 'red');
         exit EXIT_NOT_ROOT;
@@ -717,13 +709,8 @@ validate_path($IMAGE_IMG, 'image img filename');
 validate_path($QEMU_BIN, 'qemu binary path') if $QEMU_BIN;
 
 # Handle status and cleanup-only modes
-if ($SHOW_STATUS) {
-    show_status();
-}
-
-if ($CLEANUP_ONLY) {
-    cleanup_only();
-}
+show_status() if $opts{show_status};
+cleanup_only() if $opts{cleanup_only};
 
 # Handle checksum file
 if ($CHECKSUM_FILE && -f $CHECKSUM_FILE) {
@@ -743,23 +730,17 @@ if ($CHECKSUM_FILE && -f $CHECKSUM_FILE) {
 }
 
 print colored("\n=== ARM64 SBC Image Manager ===\n\n", 'bold');
-info("Target size: ${IMAGE_SIZE_GB}GB");
+info("Target size: $opts{size}GB");
 info("Mount directory: $MOUNT_DIR");
 info("Image URL: $IMAGE_URL");
 info("QEMU binary: $QEMU_BIN");
 info("Image files: $IMAGE_XZ -> $IMAGE_IMG");
-info("Verbose mode: " . ($VERBOSE ? "enabled" : "disabled"));
-info("Compression mode: " . ($COMPRESS_IMAGE ? "enabled ($COMPRESS_MODE)" : "disabled"));
-info("Dry-run mode: " . ($DRY_RUN ? "enabled" : "disabled"));
-if ($COMPRESS_IMAGE && $OUTPUT_NAME) {
-    info("Output file: $OUTPUT_NAME");
-}
-if ($CHECKSUM) {
-    info("Checksum verification: enabled");
-}
-if ($BACKUP_IMAGE) {
-    info("Backup mode: enabled");
-}
+info("Verbose mode: " . ($opts{verbose} ? "enabled" : "disabled"));
+info("Compression mode: " . ($opts{compress} ? "enabled ($opts{compress_mode})" : "disabled"));
+info("Dry-run mode: " . ($opts{dry_run} ? "enabled" : "disabled"));
+info("Output file: $OUTPUT_NAME") if $opts{compress} && $OUTPUT_NAME;
+info("Checksum verification: enabled") if $CHECKSUM;
+info("Backup mode: enabled") if $opts{backup};
 print "\n";
 
 # Check dependencies
@@ -775,17 +756,12 @@ unless (-x $QEMU_BIN) {
     exit EXIT_MISSING_DEPS;
 }
 
-make_path($MOUNT_DIR) unless $DRY_RUN;
+make_path($MOUNT_DIR) unless $opts{dry_run};
 
 # Cleanup previous state
 info("Cleaning up previous state...");
-my $loop_output = `losetup -a 2>/dev/null | grep "$IMAGE_IMG" || true`;
-if ($loop_output) {
-    chomp($loop_output);
-    my @old_loops = map { /^(\/dev\/loop\d+):/ ? $1 : () } split(/\n/, $loop_output);
-    foreach my $dev (@old_loops) {
-        run_or_die(['losetup', '-d', $dev]);
-    }
+for my $loop_line (get_loop_devices($IMAGE_IMG)) {
+    run_or_die(['losetup', '-d', $1]) if $loop_line =~ /^(\/dev\/loop\d+):/;
 }
 
 # Check for existing work
@@ -808,7 +784,7 @@ unless (check_existing_work()) {
 validate_image($IMAGE_IMG);
 
 # Create backup if requested
-if ($BACKUP_IMAGE && -f $IMAGE_IMG) {
+if ($opts{backup} && -f $IMAGE_IMG) {
     my $backup_name = "${IMAGE_IMG}.backup";
     info("Creating backup: $backup_name");
     copy($IMAGE_IMG, $backup_name) or die colored("[!] Failed to create backup\n", 'red');
@@ -901,7 +877,7 @@ foreach my $dir (@binds) {
 run_or_die(['mount', '--bind', '/etc/resolv.conf', "$MOUNT_DIR/etc/resolv.conf"]);
 run_or_die(['cp', $QEMU_BIN, "$MOUNT_DIR/usr/bin/"]);
 
-if ($SKIP_CHROOT) {
+if ($opts{skip_chroot}) {
     info("Skipping chroot (setup only mode)");
     info("Image is mounted at: $MOUNT_DIR");
     info("Run cleanup manually when done");
@@ -914,7 +890,7 @@ if ($SKIP_CHROOT) {
 cleanup();
 
 # Compress image if requested
-if ($COMPRESS_IMAGE) {
+if ($opts{compress}) {
     print "\n";
     info("Starting image compression...");
     compress_image($IMAGE_IMG, $OUTPUT_NAME);
