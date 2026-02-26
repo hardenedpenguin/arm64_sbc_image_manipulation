@@ -1,5 +1,7 @@
 # ARM64 SBC Image Manipulation Tool
 
+![GitHub total downloads](https://img.shields.io/github/downloads/hardenedpenguin/arm64_sbc_image_manipulation/total?style=flat-square)
+
 A streamlined Perl script for downloading, expanding, and entering a chroot environment for ARM64 Single Board Computer images on x86_64 hosts.
 
 ## Features
